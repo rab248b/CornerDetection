@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Homework 2 Starter</title>
+	<!-- An AMD-loader like RequireJS is necessary for srlib's asynchronous modules -->
+	<script src="require.js"></script>
+	<!-- Load srlib following RequireJS -->
+	<script src="srlib.js"></script>
+	<!-- JQuery provides a very nice set of tools when dealing with AJAX requests -->
+	<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.1.0/jquery.min.js"></script>
+	<script type="text/javascript">
+	// Begin processing once webpage loaded
+	$(document).ready(function() {
+		// Globals
+		sketches = {};
+		deserializer = new srlib.core.data.io.Deserializer();
+		serializer = new srlib.core.data.io.Serializer();
+		Total = 0;
+		AllNoth = 0;
+		TP = 0;
+		FP = 0;
+		TN = 0;
+		FN = 0;
+
+		drawStrokes = true;
+
+		startSketch = 4000; // Rather than start with the oldest, will look at some of the more recent sketches for now
+		maxSketches = startSketch + 1; // To begin with, simply consider 200 sketches for segmentation; can change this value anytime for more testing
+
+		getSketches();
+
+	});
+    function getMetrics(original, current) {
+		var origSubstrokes = {};
+		var currSubstrokes = {};
+		var failures = false;
+
+		// Sort substrokes from original and current into lists grouped by parent stroke
+		for (var key in original.getSubstrokes()) {
+			try {
+				if (original.getSubstrokes()[key].getPoints().length > 1) {
+					if (original.getSubstrokes()[key].getParent().getId() in origSubstrokes) {
+						origSubstrokes[original.getSubstrokes()[key].getParent().getId()].push(original.getSubstrokes()[key]);
+					} else {
+						origSubstrokes[original.getSubstrokes()[key].getParent().getId()] = [original.getSubstrokes()[key]];
+					}
+				}
+			} catch (err) {
+				// Some sketches have an error with where not all substrokes have a parent, ignore these since they won't appear in the current list either
+			}
+		}
+
+		for (var key in current.getSubstrokes()) {
+			try {
+				if (current.getSubstrokes()[key].getParent().getId() in currSubstrokes) {
+					currSubstrokes[current.getSubstrokes()[key].getParent().getId()].push(current.getSubstrokes()[key]);
+				} else {
+					currSubstrokes[current.getSubstrokes()[key].getParent().getId()] = [current.getSubstrokes()[key]];
+				}
+			} catch (err) {
+				// Some sketches may be missing a parent, ignore in this case
+			}
+		}
+
+		// Attempt to match substrokes from the same parent
+		// If only 1 substroke from parent -- no segmentation;
+		// All matches are True Negatives
+		// All extras in current are False Positives
+		// If more than 1 substroke from parent -- segmentation; 
+		// All matches are True Positives
+		// All extras in current are False Positives
+		// All extras in original are False Negatives
+		for (var key in origSubstrokes) { // Due to a small bug, there's a few sketches where the stroke didn't get added, so it is missing in current; this makes original a superset at worse when they don't match, so just go through current's strokes
+			var origList = origSubstrokes[key];
+			var currList = currSubstrokes[key];
+
+			// Get a threshold for corner distance customized for the stroke size
+			var BB = new srlib.core.data.container.BoundingBox(origList[0].getParent());
+			var threshold = Math.sqrt(Math.pow(BB.getMaxX() - BB.getMinX(), 2) + Math.pow(BB.getMaxY() - BB.getMinY(), 2)) / 40.0;
+
+			if (origList.length == 1) { // No segmentation
+				if (currList.length == 1) {
+					TN = TN + 1; // Correctly determine no segmentation
+				} else {
+					FP = FP + (currList.length - 1) / 2; // All extra strokes are FP
+					failures = true;
+				}
+			} else { // Segmentation
+				// Try to find matches
+				var distances = [];
+
+				for (var j = 0; j < origList.length; j++) {
+					distances[j] = [];
+					for (var k = 0; k < currList.length; k++) {
+						// distance[j][k] = distance between start and end points summed
+						distances[j][k] = origList[j].getPoints()[0].distance(currList[k].getPoints()[0]) + origList[j].getPoints()[origList[j].getPoints().length - 1].distance(currList[k].getPoints()[currList[k].getPoints().length - 1]);
+					}
+				}
+				// Use distance matrix to compute metrics
+				for (var j = 0; j < distances.length; j++) {
+					var k = distances[j].indexOf(Math.min.apply(Math, distances[j]));
+					if (distances[j][k] < threshold * 10) {
+						TP = TP + 1; // A match that was cumulatively within 3 pixels of both start and end points
+					} else {
+						FN = FN + 0.5; // Else, no close match; we assume a miss, which is false negative
+						failures = true;
+					}
+				}
+				if (currList.length > origList.length) {
+					FP = FP + (currList.length - origList.length) / 2; // Any extra in currList are FPs
+					failures = true;
+				}
+			}
+		}
+
+		Total = Total + 1;
+		if (!failures) {
+			AllNoth = AllNoth + 1;
+		}
+		
+		// console.log(TN+"TN  " + TP +"TP  " +  FP +"FP  "  +FN +"FN  " + AllNoth+"  AllNoth " +Total+  "Total" );
+		var accuracy= (TP+TN)/(TP+TN+FP+FN);
+		console.log("Accuracy" + accuracy );
+	}
+
+
+	function updateDrawStrokes() {
+		drawStrokes = true;
+		$('#drawStrokes').prop('checked',true);
+		$('#drawSubstrokes').prop('checked',false);
+		updateCanvas();
+	}
+
+	function updateDrawSubstrokes() {
+		drawStrokes = false;
+		$('#drawStrokes').prop('checked',false);
+		$('#drawSubstrokes').prop('checked',true);
+		updateCanvas();
+	}
+
+	function getS(s) {
+		if (!drawStrokes) {
+			return s.getSubstrokes();
+		}
+		else {
+			return s.getStrokes();
+		}
+	}
+
+	// Draw data on update of sketch selection
+	function updateCanvas() {
+		var c = document.getElementById("sketch");
+		var ctx = c.getContext("2d");
+
+		// Clear canvas first
+		ctx.clearRect(0,0,c.width,c.height);
+
+		var current = sketches[$('#sketches').val()]; // Select the sketch selected from global dictionary
+		for (var key in getS(current)) {
+			// Draw new shape
+
+			var stroke = getS(current)[key]; // Select the drawing area
+			var points = stroke.getPoints();
+
+			ctx.beginPath();
+			ctx.lineWidth = "5";
+			ctx.strokeStyle = "#"+((1<<24)*Math.random()|0).toString(16); // Randomize stroke colors for easy visualization
+
+			for (var i = 0; i < points.length; i++) { // Set path to point values
+				if (i == 0) {
+					ctx.moveTo(points[i].getX(),points[i].getY());
+				}
+				else {
+					ctx.lineTo(points[i].getX(),points[i].getY());
+				}
+			}
+
+			ctx.stroke();  // Draw it
+		}
+	}
+
+	// Load data, populating global dictionary of sketch objects and selection list for viewing ease
+	function getSketches() {
+		// For this assignment, sketches will live on srl_db
+		// See http://srl-prod1.cs.tamu.edu:7750/doc/ for more info about using the API
+		while (startSketch < maxSketches) {
+		//console.log(startSketch+ "" + maxSketches);
+			$.ajax({url: "http://srl-prod1.cs.tamu.edu:7750/getSketches?domain=MechanixCleaned&interpretation=force&skip=" + String(startSketch), success: function(result) {
+				for (var i = 0; i < result.length; i++) {
+					json = result[i]; // Get original sketch
+					var original = deserializer.fromSketchMLJSON(JSON.stringify(json)); // Put in srlib object for processing
+
+					json = serializer.toSketchMLJSONbasic(original); // While the original remains for reference, we'll strip out the substrokes and other elements so you can add your own substrokes for comparison
+					var current = deserializer.fromSketchMLJSONbasic(json);
+					var currentChange =deserializer.fromSketchMLJSONbasic(json);
+					// Create substrokes here!
+					for (var key in current.getStrokes()) {
+						var points = current.getStrokes()[key].getPoints();
+						var modifypoints=currentChange.getStrokes()[key].getPoints();
+						// // var pointsInFunc = (JSON.parse(JSON.stringify(current.getStrokes()[key].getPoints()))) ;
+						// var boundingbox = new srlib.core.data.container.BoundingBox(current.getStrokes()[key]);
+			   //          var S = Math.sqrt(Math.pow(boundingbox.getMaxX() - boundingbox.getMinX(), 2) + Math.pow(boundingbox.getMaxY() - boundingbox.getMinY(), 2)) / 40.0;
+						S=determineSamplingSpace(modifypoints);
+						var resampledPoints =resamplePoints(modifypoints,S);
+						// var cornerList=0;
+					    cornerList =getCorners(modifypoints);
+						
+						
+						//console.log(resampledPoints.length + "   "+ pointsInFunc.length+ "  "+ cornerList.length);
+						var newPoints = [];
+
+						// Iterating through points, perhaps for feature detection or some other purpose
+						for (var j = 0; j < points.length; j++) {
+							// Here, simply add all points to the substroke
+							newPoints.push(points[j]);
+							/*newPoints[j].setX(resampledPoints[j].getX());
+							newPoints[j].setY(resampledPoints[j].getY());*/
+						}
+
+    					
+						
+    					for(var k = 0; k < cornerList.length-1; k++){
+    						var subpoints=[];
+    						for(var l= cornerList[k];l<=cornerList[k+1];l++){
+							 
+    							subpoints.push(newPoints[l]);
+								//console.log(subpoints);
+							}
+							//console.log(current.getStrokes()[key], j);
+    						 substroke = new srlib.core.data.container.Substroke(current.getStrokes()[key],subpoints);
+							
+    						current.addSubstroke(substroke);
+    					} 
+										
+					}
+
+					// Save both sketches for visual comparison
+					sketches["old-" + original.getId()] = original;
+					$('#sketches').append($('<option/>', { 
+						value: "old-" + original.getId(), // Save sketch id as value for easy access from global dictionary
+						text : "old-" + original.getId() // Show id as value
+					}));
+
+					sketches["new-" + current.getId()] = current;
+					$('#sketches').append($('<option/>', { 
+						value: "new-" + current.getId(), // Save sketch id as value for easy access from global dictionary
+						text : "new-" + current.getId() // Show id as value
+					}));
+					
+					getMetrics(original,current);
+				}
+			}});
+		startSketch = startSketch + 1; // getSketches gets 50 sketches at a time always, break into requests with a skip/start counter
+		
+		}
+	}
+
+
+	function determineSamplingSpace(origPoints){
+		var xcoordinates = [];
+		var ycoordinates =[];
+		for(var j =0;j<origPoints.length;j++){
+			xcoordinates[j] = origPoints[j].getX();
+			ycoordinates[j] = origPoints[j].getY();
+
+		}
+
+		xcoordinates.sort(sortNumber);
+		ycoordinates.sort(sortNumber);
+
+		var topLeft = new srlib.core.data.container.Point(xcoordinates[0],ycoordinates[0]);
+		var bottomRight = new srlib.core.data.container.Point(xcoordinates[xcoordinates.length-1], ycoordinates[ycoordinates.length-1]);
+		diagonal = topLeft.distance(bottomRight);
+		return diagonal/40.0;
+	}
+
+		function resamplePoints (originalPoints, S) {
+			var D=0;
+			var d;
+			var resampled=[];
+			var x,y;
+			newPoint= new srlib.core.data.container.Point();
+			for (var i = 1; i < originalPoints.length; i++){
+				//d=getDistance(originalPoints[i-1],originalPoints[i]);
+				d=originalPoints[i-1].distance(originalPoints[i]);
+				if(D+d>=S) {
+				x=originalPoints[i-1].getX() +((S-D)/d)*(originalPoints[i].getX()-originalPoints[i-1].getX());
+				y=originalPoints[i-1].getY() +((S-D)/d)*(originalPoints[i].getY()-originalPoints[i-1].getY());
+				//x=originalPoints[i-1].x +((S-D)/d)*(originalPoints[i].x-originalPoints[i-1].x);
+				//y=originalPoints[i-1].y +((S-D)/d)*(originalPoints[i].y-originalPoints[i-1].y);
+
+				newPoint=new srlib.core.data.container.Point(x,y);
+				resampled.push(newPoint);
+				originalPoints.splice(i,1,newPoint);
+
+				D=0;
+				}else{
+ 				D=D+d;
+				}
+			}
+
+			//console.log(resampled);
+   			return resampled
+		}
+
+
+
+		function getCorners (resampPoints){
+			var corners= [];
+			var straws=[];
+			corners.push(0);
+			var W=3;
+			
+			for (var i = W; i < resampPoints.length-W; i++){
+					//straws[i-W]=getDistance(resampPoints[i-W],resampPoints[i+W]);
+				straws[i-W]= resampPoints[i-W].distance(resampPoints[i+W]);
+
+				//console.log(resampPoints[i-W].x()+ "   "+ resampPoints[i+W].x());
+				}
+			var t = getMedian(straws)*0.5;
+			for (var i = W; i < resampPoints.length-W; i++){
+
+				if(straws[i-W]<t){
+					localMin=Number.POSITIVE_INFINITY;
+					localMinIndex=i;
+					while(i<straws.length && straws[i-W]<t){
+						if(straws[i-W]< localMin){
+							localMin = straws[i-W];
+							localMinIndex=i;
+						}
+						i++;
+					}
+			corners.push(localMinIndex);
+				}
+			}
+
+			corners.push(resampPoints.length-1);
+			
+		
+			finalcorners=postProcessCorners(resampPoints,corners,straws);
+			
+		return finalcorners
+
+		}
+
+		
+    function postProcessCorners(resampled,cornerList,straws){
+			var W=3;
+			do{
+				flag=true;
+
+				for(var i = 1; i < cornerList.length; i++){
+					var c1=cornerList[i-1];
+					var c2=cornerList[i];
+					
+					if(!isLine(resampled, c1,c2)){
+						if(!(c2-c1<=(W*2))){
+				
+						//newcorner= Math.floor((c1+c2)/2);
+						newcorner= halfwayCorner(straws,c1,c2);
+						
+						cornerList.splice(i,0, newcorner);						
+						flag=false;
+					}
+					}
+				}
+				}while(!flag);
+			
+				for(var i = 1; i < cornerList.length-1; i++){
+					var c1=cornerList[i-1];
+					var c2=cornerList[i+1];
+					if(isLine(resampled, c1,c2)){
+						cornerList.splice(i,1);
+						i--;
+					}
+
+				}
+		
+			return cornerList
+		}
+
+
+		function halfwayCorner(straws,c1,c2){
+			var W=3;
+			var quarter=Math.floor((c2-c1)/4);
+			var minValue= Number.POSITIVE_INFINITY;
+			var minIndex=c1;
+			for(var i= c1+quarter;i < c2-quarter; i++){
+				if(straws[i-W]< minValue){
+					minValue=straws[i-W];
+					minIndex=i;
+				}
+			}
+			return minIndex
+		}
+
+
+
+		function isLine(points, c1,c2){
+			var threshold=0.8;
+			//var distance=getDistance(points[c1], points[c2]);
+			var distance=points[c1].distance(points[c2]);
+			var pathDistance= getPathDistance(points, c1,c2);
+			if(distance/pathDistance>threshold){
+				return true
+			}else{
+				return false
+			}
+		}
+
+		function getPathDistance(points, c1,c2){
+			var d=0;
+			for(var i= c1;i < c2; i++)
+				//d=d+getDistance(points[i],points[i+1]);
+				d=d+(points[i]).distance(points[i+1]);
+			return d
+
+		}
+
+		function getMedian(args) {
+			if (!args.length) {return 0};
+  			var numbers = args.slice(0).sort(sortNumber());
+  			var middle = Math.floor(numbers.length / 2);
+  			var isEven = numbers.length % 2 === 0;
+  			return isEven ? (numbers[middle] + numbers[middle - 1]) / 2 : numbers[middle];
+		}
+
+
+		function sortNumber(a,b) {
+    		return a - b
+		}
+	</script>
+</head>
+<!-- The body consists simply of a canvas for drawing and a selection list; this display is for the user's benefit, not required -->
+<body>
+
+<canvas id="sketch" width="1024" height="1024" style="position:fixed;top:0px;left:0px;border:1px solid #d3d3d3">
+Your browser does not support the HTML5 canvas tag.</canvas>
+
+<select id="sketches" size="2" style="position:fixed;top:0px;left:0px;width:20%;height:100%;" onchange="updateCanvas()"></select>
+23
+<div style="position:fixed;top:0px;right:0px">
+Draw 
+<input id="drawStrokes" type="radio" value="strokes" onclick="updateDrawStrokes()" checked="true"> Strokes
+<input id="drawSubstrokes" type="radio" value="substrokes" onclick="updateDrawSubstrokes()"> Substrokes<br>
+</div>
+
+</body>
+</html>

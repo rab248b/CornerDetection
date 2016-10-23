@@ -1,0 +1,4 @@
+In this code, we have implemented short -straw method for finding the corners. There were several problems encountered while implementing the Short straw method. I have reduced the threshold of the straw length in order to obtain a greater accuracy. Also, I have minimized the threshold for line test to avoid deletion of true positives.
+The code is quite straightforward with calls to different javascript functions. 
+Also, I have utilised the srl-lib based Point() class methods like distance() to calculated the Euclidean distance between 
+2 points. 
